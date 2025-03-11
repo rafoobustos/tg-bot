@@ -12,9 +12,11 @@ import aiohttp
 import numpy as np
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ContentType
+from aiogram.utils.executor import start_polling
 from deoldify.visualize import get_image_colorizer
 from dotenv import load_dotenv
 from PIL import Image
+import torch
 import urllib3
 
 INPUT_PATH: str = "input.jpg"
@@ -45,6 +47,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Определение устройства для работы
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+logger.info(f"Используется устройство: {device}")
 
 class ImageProcessor:
     """Класс для обработки изображений."""
@@ -145,18 +151,19 @@ class ImageProcessor:
         Returns:
             True если изображение черно-белое, False в противном случае
         """
+        # Улучшенное определение ч/б фото
         image = Image.open(image_path).convert("RGB")
         img_array = np.array(image)
+        
+        # Проверяем разницу между RGB каналами
         r, g, b = img_array[:,:,0], img_array[:,:,1], img_array[:,:,2]
         rg_diff = np.abs(r - g).mean()
         rb_diff = np.abs(r - b).mean()
         gb_diff = np.abs(g - b).mean()
         
-        is_grayscale = (
-            rg_diff < GRAYSCALE_THRESHOLD and 
-            rb_diff < GRAYSCALE_THRESHOLD and 
-            gb_diff < GRAYSCALE_THRESHOLD
-        )
+        # Если разница между каналами минимальна, считаем изображение ч/б
+        threshold = 5.0  # Можно настроить этот порог
+        is_grayscale = (rg_diff < threshold and rb_diff < threshold and gb_diff < threshold)
         
         logger.info(f"Проверка ч/б: rg_diff={rg_diff}, rb_diff={rb_diff}, gb_diff={gb_diff}, результат={is_grayscale}")
         return is_grayscale
@@ -230,6 +237,7 @@ class TelegramBot:
                 await processing_msg.edit_text("🧐 Проверка, является ли изображение черно-белым...")
                 
                 if self.image_processor.check_if_grayscale(INPUT_PATH):
+                    print("Цветизация фото...")  # Добавляем отладочный вывод
                     mode_name = "художественной" if mode == "colorize_artistic" else "стабильной"
                     await processing_msg.edit_text(
                         f"🎨 Выполняется {mode_name} колоризация изображения...\n"
@@ -240,8 +248,10 @@ class TelegramBot:
                     is_artistic = (mode == "colorize_artistic")
                     result_image = self.image_processor.process_colorization(INPUT_PATH, artistic=is_artistic)
                     result_image.save(OUTPUT_PATH)
+                    print("Обработка завершена! Отправляю фото...")  # Добавляем отладочный вывод
                     logger.info(f"Колоризация завершена, результат сохранен в {OUTPUT_PATH}")
                 else:
+                    print("Фото не распознано как черно-белое")  # Добавляем отладочный вывод
                     await processing_msg.edit_text("❌ Это изображение не является черно-белым")
                     return
                     
@@ -287,6 +297,7 @@ class TelegramBot:
 def main() -> None:
     """Точка входа в приложение."""
     try:
+        logger.info("Бот запущен!")
         bot = TelegramBot()
         asyncio.run(bot.start_polling())
     except (KeyboardInterrupt, SystemExit):
