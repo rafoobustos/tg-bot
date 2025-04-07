@@ -111,7 +111,7 @@ networkx==3.4.2
 notebook_shim==0.2.4
 numba==0.61.0
 numexpr==2.10.2
-numpy==1.24.4
+numpy==1.26.4
 opencv-python==4.11.0.86
 overrides==7.7.0
 packaging==24.2

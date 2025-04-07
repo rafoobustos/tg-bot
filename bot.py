@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 from typing import Dict
+from pathlib import Path
 
 import aiohttp
 import numpy as np
@@ -14,6 +15,9 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ContentType
 from aiogram.utils.executor import start_polling
 from deoldify.visualize import get_image_colorizer
+from deoldify.generators import gen_inference_wide
+from deoldify.filters import MasterFilter, ColorizerFilter
+from deoldify.visualize import ModelImageVisualizer
 from dotenv import load_dotenv
 from PIL import Image
 import torch
@@ -27,13 +31,15 @@ PICWISH_API_URL: str = "https://techhk.aoscdn.com/api/tasks/visual/scale"
 MODES: Dict[str, str] = {
     "colorize_artistic": "Художественная колоризация",
     "colorize_stable": "Стабильная колоризация",
-    "enhance": "Улучшение качества"
+    "enhance": "Улучшение качества",
+    "compare_models": "Сравнение моделей"
 }
 
 BUTTONS: Dict[str, str] = {
     "🎨 Художественная колоризация": "colorize_artistic",
     "🖼 Стабильная колоризация": "colorize_stable",
-    "✨ Улучшение качества": "enhance"
+    "✨ Улучшение качества": "enhance",
+    "🔍 Сравнение моделей": "compare_models"
 }
 
 logging.basicConfig(
@@ -59,22 +65,72 @@ class ImageProcessor:
         """Инициализация обработчика изображений."""
         self.colorizer_artistic = get_image_colorizer(artistic=True)
         self.colorizer_stable = get_image_colorizer(artistic=False)
+        # Создаем копию стабильного колоризатора для настроенной модели
+        try:
+            # Создаем стандартный стабильный колоризатор
+            self.colorizer_tuned = get_image_colorizer(artistic=False)
+            
+            # 2. Загружаем наши весса
+            model_path = 'models/Tuned_model.pth'
+            if os.path.exists(model_path):
+                logger.info(f"Загрузка весов модели из {model_path}")
+                checkpoint = torch.load(model_path, map_location=device)
+                
+                # 3. Заменяем веса модели в существующем колоризаторе
+                if 'model_state_dict' in checkpoint:
+                    # Правильный путь к модели на основе анализа visualize.py
+                    model = self.colorizer_tuned.filter.filters[0].learn.model
+                    
+                    # Загружаем веса
+                    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                    model.eval()
+                    
+                    logger.info("Настроенная модель успешно загружена")
+                else:
+                    logger.error("В файле модели не найден model_state_dict")
+                    self.colorizer_tuned = None
+            else:
+                logger.error(f"Файл модели не найден: {model_path}")
+                self.colorizer_tuned = None
+        except Exception as e:
+            logger.error(f"Подробная ошибка загрузки: {str(e)}", exc_info=True)
+            self.colorizer_tuned = None
 
-    def process_colorization(self, image_path: str, artistic: bool = True) -> Image.Image:
+    def process_colorization(self, image_path: str, artistic: bool = True, model_type: str = 'stable') -> Image.Image:
         """
         Колоризация черно-белого изображения.
 
         Args:
             image_path: Путь к изображению
             artistic: Использовать художественную колоризацию
+            model_type: Тип модели ('stable' или 'tuned')
 
         Returns:
             Обработанное изображение
         """
         try:
-            logger.info(f"Запуск колоризации с параметром artistic={artistic}")
-            colorizer = self.colorizer_artistic if artistic else self.colorizer_stable
-            logger.info(f"Выбран колоризатор: {'художественный' if artistic else 'стабильный'}")
+            logger.info(f"Запуск колоризации с параметрами artistic={artistic}, model_type={model_type}")
+            if artistic:
+                colorizer = self.colorizer_artistic
+            else:
+                if model_type == 'tuned' and self.colorizer_tuned is None:
+                    logger.warning("Настроенная модель недоступна, использую стандартную модель")
+                    colorizer = self.colorizer_stable
+                else:
+                    colorizer = self.colorizer_tuned if model_type == 'tuned' else self.colorizer_stable
+            
+            # Добавьте эти строки для отладки
+            if not artistic:
+                model_id = id(colorizer.filter.filters[0].learn.model)
+                logger.info(f"ID модели {model_type}: {model_id}")
+                
+                # Для более детального сравнения
+                if model_type == 'tuned':
+                    tuned_id = id(self.colorizer_tuned.filter.filters[0].learn.model)
+                    stable_id = id(self.colorizer_stable.filter.filters[0].learn.model)
+                    logger.info(f"ID моделей для сравнения: tuned={tuned_id}, stable={stable_id}")
+            
+            logger.info(f"Выбран колоризатор: {model_type}")
             return colorizer.get_transformed_image(str(image_path), render_factor=35)
         except Exception as e:
             logger.error(f"Ошибка при колоризации: {str(e)}")
@@ -168,6 +224,48 @@ class ImageProcessor:
         logger.info(f"Проверка ч/б: rg_diff={rg_diff}, rb_diff={rb_diff}, gb_diff={gb_diff}, результат={is_grayscale}")
         return is_grayscale
 
+    # Вспомогательная функция для исследования структуры объекта
+    def inspect_object(self, obj, name="object", max_depth=2, current_depth=0):
+        if current_depth > max_depth:
+            return
+        
+        logger.info(f"{'  ' * current_depth}Исследуем {name} типа {type(obj).__name__}")
+        
+        for attr_name in dir(obj):
+            if attr_name.startswith('__'):
+                continue
+            try:
+                attr = getattr(obj, attr_name)
+                if not callable(attr) and not attr_name.startswith('_'):
+                    logger.info(f"{'  ' * current_depth}- {attr_name}: {type(attr).__name__}")
+                    if hasattr(attr, '__dict__') and current_depth < max_depth:
+                        self.inspect_object(attr, f"{name}.{attr_name}", max_depth, current_depth + 1)
+            except Exception as e:
+                logger.info(f"{'  ' * current_depth}- Ошибка при доступе к {attr_name}: {e}")
+
+    # Используйте эту функцию для анализа colorizer_tuned
+    def inspect_colorizer_tuned(self):
+        self.inspect_object(self.colorizer_tuned, "colorizer_tuned")
+
+    # Получаем архитектуру стандартной модели для сравнения
+    def inspect_stable_model(self):
+        if hasattr(self.colorizer_stable, 'filter') and hasattr(self.colorizer_stable.filter, 'learn'):
+            stable_model = self.colorizer_stable.filter.learn.model
+            logger.info(f"Архитектура стандартной модели: {type(stable_model).__name__}")
+            logger.info(f"Слои стандартной модели: {list(stable_model.children())[:3]}...")
+
+    def get_stable_image_colorizer(
+        self,
+        root_folder: Path = Path('./'),
+        weights_name: str = 'ColorizeStable_gen',
+        results_dir='result_images',
+        render_factor: int = 35
+    ) -> ModelImageVisualizer:
+        learn = gen_inference_wide(root_folder=root_folder, weights_name=weights_name)
+        filtr = MasterFilter([ColorizerFilter(learn=learn)], render_factor=render_factor)
+        vis = ModelImageVisualizer(filtr, results_dir=results_dir)
+        return vis
+
 class TelegramBot:
     """Класс для работы с Telegram ботом."""
     
@@ -209,6 +307,7 @@ class TelegramBot:
             "1. Художественная колоризация - для творческой раскраски ч/б фото\n"
             "2. Стабильная колоризация - для реалистичной раскраски ч/б фото\n"
             "3. Улучшение качества - для улучшения любых фотографий\n"
+            "4. Сравнение моделей - сравнение обычной DeOldify и дообученной версии\n"
             "\nПосле выбора режима просто отправьте мне фотографию!",
             reply_markup=keyboard
         )
@@ -237,21 +336,19 @@ class TelegramBot:
                 await processing_msg.edit_text("🧐 Проверка, является ли изображение черно-белым...")
                 
                 if self.image_processor.check_if_grayscale(INPUT_PATH):
-                    print("Цветизация фото...")  # Добавляем отладочный вывод
-                    mode_name = "художественной" if mode == "colorize_artistic" else "стабильной"
                     await processing_msg.edit_text(
-                        f"🎨 Выполняется {mode_name} колоризация изображения...\n"
+                        "🎨 Выполняется колоризация изображения...\n"
                         "Это может занять некоторое время."
                     )
                     
-                    logger.info(f"Начинаю колоризацию изображения в режиме {mode}")
-                    is_artistic = (mode == "colorize_artistic")
-                    result_image = self.image_processor.process_colorization(INPUT_PATH, artistic=is_artistic)
-                    result_image.save(OUTPUT_PATH)
-                    print("Обработка завершена! Отправляю фото...")  # Добавляем отладочный вывод
-                    logger.info(f"Колоризация завершена, результат сохранен в {OUTPUT_PATH}")
+                    artistic = mode == "colorize_artistic"
+                    result = self.image_processor.process_colorization(
+                        INPUT_PATH, 
+                        artistic=artistic,
+                        model_type='stable'
+                    )
+                    result.save(OUTPUT_PATH)
                 else:
-                    print("Фото не распознано как черно-белое")  # Добавляем отладочный вывод
                     await processing_msg.edit_text("❌ Это изображение не является черно-белым")
                     return
                     
@@ -267,6 +364,54 @@ class TelegramBot:
                 
                 if not success:
                     await processing_msg.edit_text("❌ Не удалось улучшить качество изображения.")
+                    return
+                    
+            elif mode == "compare_models":
+                await processing_msg.edit_text("🧐 Проверка, является ли изображение черно-белым...")
+                
+                if self.image_processor.check_if_grayscale(INPUT_PATH):
+                    await processing_msg.edit_text(
+                        "🎨 Выполняется колоризация изображения двумя моделями...\n"
+                        "Это может занять некоторое время."
+                    )
+                    
+                    # Проверяем доступность дообученной модели
+                    if self.image_processor.colorizer_tuned is None:
+                        await processing_msg.edit_text(
+                            "❌ Дообученная модель недоступна. Пожалуйста, используйте другой режим."
+                        )
+                        return
+                    
+                    # Обработка стандартной моделью
+                    result_stable = self.image_processor.process_colorization(
+                        INPUT_PATH, 
+                        artistic=False, 
+                        model_type='stable'
+                    )
+                    result_stable.save('output_stable.jpg')
+                    
+                    # Обработка дообученной моделью
+                    result_tuned = self.image_processor.process_colorization(
+                        INPUT_PATH, 
+                        artistic=False, 
+                        model_type='tuned'
+                    )
+                    result_tuned.save('output_tuned.jpg')
+                    
+                    # Отправка обоих результатов
+                    media = types.MediaGroup()
+                    media.attach_photo(types.InputFile('output_stable.jpg'), 'Стандартная модель DeOldify')
+                    media.attach_photo(types.InputFile('output_tuned.jpg'), 'Дообученная модель')
+                    
+                    await message.reply_media_group(media=media)
+                    await processing_msg.delete()
+                    
+                    # Очистка временных файлов
+                    os.remove('output_stable.jpg')
+                    os.remove('output_tuned.jpg')
+                    return
+                else:
+                    await processing_msg.edit_text("❌ Это изображение не является черно-белым")
                     return
 
             if os.path.exists(OUTPUT_PATH):
