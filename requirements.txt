@@ -15,7 +15,6 @@ asttokens==3.0.0
 async-lru==2.0.4
 async-timeout==4.0.3
 attrs==25.1.0
-Babel==2.9.1
 basicsr==1.4.2
 beautifulsoup4==4.13.3
 bleach==6.2.0

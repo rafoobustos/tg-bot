@@ -60,7 +60,7 @@ logger.info(f"Используется устройство: {device}")
 
 class ImageProcessor:
     """Класс для обработки изображений."""
-    
+
     def __init__(self) -> None:
         """Инициализация обработчика изображений."""
         self.colorizer_artistic = get_image_colorizer(artistic=True)
@@ -69,22 +69,22 @@ class ImageProcessor:
         try:
             # Создаем стандартный стабильный колоризатор
             self.colorizer_tuned = get_image_colorizer(artistic=False)
-            
+
             # 2. Загружаем наши весса
             model_path = 'models/Tuned_model.pth'
             if os.path.exists(model_path):
                 logger.info(f"Загрузка весов модели из {model_path}")
                 checkpoint = torch.load(model_path, map_location=device)
-                
+
                 # 3. Заменяем веса модели в существующем колоризаторе
                 if 'model_state_dict' in checkpoint:
                     # Правильный путь к модели на основе анализа visualize.py
                     model = self.colorizer_tuned.filter.filters[0].learn.model
-                    
+
                     # Загружаем веса
                     model.load_state_dict(checkpoint['model_state_dict'], strict=False)
                     model.eval()
-                    
+
                     logger.info("Настроенная модель успешно загружена")
                 else:
                     logger.error("В файле модели не найден model_state_dict")
@@ -118,18 +118,18 @@ class ImageProcessor:
                     colorizer = self.colorizer_stable
                 else:
                     colorizer = self.colorizer_tuned if model_type == 'tuned' else self.colorizer_stable
-            
+
             # Добавьте эти строки для отладки
             if not artistic:
                 model_id = id(colorizer.filter.filters[0].learn.model)
                 logger.info(f"ID модели {model_type}: {model_id}")
-                
+
                 # Для более детального сравнения
                 if model_type == 'tuned':
                     tuned_id = id(self.colorizer_tuned.filter.filters[0].learn.model)
                     stable_id = id(self.colorizer_stable.filter.filters[0].learn.model)
                     logger.info(f"ID моделей для сравнения: tuned={tuned_id}, stable={stable_id}")
-            
+
             logger.info(f"Выбран колоризатор: {model_type}")
             return colorizer.get_transformed_image(str(image_path), render_factor=35)
         except Exception as e:
@@ -149,9 +149,9 @@ class ImageProcessor:
         try:
             headers = {"X-API-KEY": os.getenv("PICWISH_API_KEY")}
             data = {"sync": "1", "type": "face"}
-            
+
             logger.info(f"Отправка запроса к PicWish API: {PICWISH_API_URL}")
-            
+
             async with aiohttp.ClientSession() as session:
                 form_data = aiohttp.FormData()
                 form_data.add_field(
@@ -160,21 +160,21 @@ class ImageProcessor:
                     filename='image.jpg',
                     content_type='image/jpeg'
                 )
-                
+
                 for key, value in data.items():
                     form_data.add_field(key, value)
-                
+
                 async with session.post(PICWISH_API_URL, headers=headers, data=form_data) as response:
                     logger.info(f"Статус ответа: {response.status}")
-                    
+
                     if response.status == 200:
                         response_data = await response.json()
                         logger.info(f"Ответ API: {response_data}")
-                        
+
                         if "data" in response_data and "image" in response_data["data"]:
                             image_url = response_data["data"]["image"]
                             logger.info(f"URL обработанного изображения: {image_url}")
-                            
+
                             async with session.get(image_url) as img_response:
                                 if img_response.status == 200:
                                     image_data = await img_response.read()
@@ -189,9 +189,9 @@ class ImageProcessor:
                         error_text = await response.text()
                         logger.error(f"Ошибка API PicWish: {response.status}")
                         logger.error(error_text)
-                    
+
                     return False
-                    
+
         except Exception as e:
             logger.error(f"Ошибка при улучшении изображения: {str(e)}", exc_info=True)
             return False
@@ -210,17 +210,17 @@ class ImageProcessor:
         # Улучшенное определение ч/б фото
         image = Image.open(image_path).convert("RGB")
         img_array = np.array(image)
-        
+
         # Проверяем разницу между RGB каналами
         r, g, b = img_array[:,:,0], img_array[:,:,1], img_array[:,:,2]
         rg_diff = np.abs(r - g).mean()
         rb_diff = np.abs(r - b).mean()
         gb_diff = np.abs(g - b).mean()
-        
+
         # Если разница между каналами минимальна, считаем изображение ч/б
         threshold = 5.0  # Можно настроить этот порог
         is_grayscale = (rg_diff < threshold and rb_diff < threshold and gb_diff < threshold)
-        
+
         logger.info(f"Проверка ч/б: rg_diff={rg_diff}, rb_diff={rb_diff}, gb_diff={gb_diff}, результат={is_grayscale}")
         return is_grayscale
 
@@ -228,9 +228,9 @@ class ImageProcessor:
     def inspect_object(self, obj, name="object", max_depth=2, current_depth=0):
         if current_depth > max_depth:
             return
-        
+
         logger.info(f"{'  ' * current_depth}Исследуем {name} типа {type(obj).__name__}")
-        
+
         for attr_name in dir(obj):
             if attr_name.startswith('__'):
                 continue
@@ -268,15 +268,15 @@ class ImageProcessor:
 
 class TelegramBot:
     """Класс для работы с Telegram ботом."""
-    
+
     def __init__(self) -> None:
         """Инициализация бота."""
         load_dotenv(dotenv_path=".env", override=True)
-        
+
         bot_token = os.getenv("BOT_TOKEN")
         if not bot_token:
             raise ValueError("Error: BOT_TOKEN isn't found!")
-            
+
         self.image_processor = ImageProcessor()
         self.current_mode = {"mode": "colorize_artistic"}
         self.bot = Bot(token=bot_token)
@@ -300,7 +300,7 @@ class TelegramBot:
         keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
         buttons = [types.KeyboardButton(text) for text in BUTTONS.keys()]
         keyboard.add(*buttons)
-        
+
         await message.reply(
             "Привет! Я могу помочь с обработкой ваших фотографий! 🎨\n"
             "Выберите режим обработки:\n"
@@ -323,27 +323,27 @@ class TelegramBot:
         """Обработчик загруженных фотографий."""
         try:
             processing_msg = await message.reply("⏳ Обработка изображения началась...")
-            
+
             photo = message.photo[-1]
             file = await self.bot.get_file(photo.file_id)
             await self.bot.download_file(file.file_path, INPUT_PATH)
             logger.info(f"Фото загружено: {INPUT_PATH}")
-            
+
             mode = self.current_mode["mode"]
             logger.info(f"Выбранный режим: {mode}")
-            
+
             if mode in ["colorize_artistic", "colorize_stable"]:
                 await processing_msg.edit_text("🧐 Проверка, является ли изображение черно-белым...")
-                
+
                 if self.image_processor.check_if_grayscale(INPUT_PATH):
                     await processing_msg.edit_text(
                         "🎨 Выполняется колоризация изображения...\n"
                         "Это может занять некоторое время."
                     )
-                    
+
                     artistic = mode == "colorize_artistic"
                     result = self.image_processor.process_colorization(
-                        INPUT_PATH, 
+                        INPUT_PATH,
                         artistic=artistic,
                         model_type='stable'
                     )
@@ -351,61 +351,61 @@ class TelegramBot:
                 else:
                     await processing_msg.edit_text("❌ Это изображение не является черно-белым")
                     return
-                    
+
             elif mode == "enhance":
                 await processing_msg.edit_text(
                     "🔍 Улучшаем качество изображения...\n"
                     "Это может занять некоторое время."
                 )
-                
+
                 logger.info("Начинаю улучшение качества изображения через PicWish API")
                 success = await self.image_processor.enhance_image_picwish(INPUT_PATH)
                 logger.info(f"Результат улучшения через API: {success}")
-                
+
                 if not success:
                     await processing_msg.edit_text("❌ Не удалось улучшить качество изображения.")
                     return
-                    
+
             elif mode == "compare_models":
                 await processing_msg.edit_text("🧐 Проверка, является ли изображение черно-белым...")
-                
+
                 if self.image_processor.check_if_grayscale(INPUT_PATH):
                     await processing_msg.edit_text(
                         "🎨 Выполняется колоризация изображения двумя моделями...\n"
                         "Это может занять некоторое время."
                     )
-                    
+
                     # Проверяем доступность дообученной модели
                     if self.image_processor.colorizer_tuned is None:
                         await processing_msg.edit_text(
                             "❌ Дообученная модель недоступна. Пожалуйста, используйте другой режим."
                         )
                         return
-                    
+
                     # Обработка стандартной моделью
                     result_stable = self.image_processor.process_colorization(
-                        INPUT_PATH, 
-                        artistic=False, 
+                        INPUT_PATH,
+                        artistic=False,
                         model_type='stable'
                     )
                     result_stable.save('output_stable.jpg')
-                    
+
                     # Обработка дообученной моделью
                     result_tuned = self.image_processor.process_colorization(
-                        INPUT_PATH, 
-                        artistic=False, 
+                        INPUT_PATH,
+                        artistic=False,
                         model_type='tuned'
                     )
                     result_tuned.save('output_tuned.jpg')
-                    
+
                     # Отправка обоих результатов
                     media = types.MediaGroup()
                     media.attach_photo(types.InputFile('output_stable.jpg'), 'Стандартная модель DeOldify')
                     media.attach_photo(types.InputFile('output_tuned.jpg'), 'Дообученная модель')
-                    
+
                     await message.reply_media_group(media=media)
                     await processing_msg.delete()
-                    
+
                     # Очистка временных файлов
                     os.remove('output_stable.jpg')
                     os.remove('output_tuned.jpg')
@@ -425,7 +425,7 @@ class TelegramBot:
                     "❌ Произошла ошибка при обработке изображения. "
                     "Файл результата не найден."
                 )
-                
+
         except Exception as e:
             logger.error(f"Ошибка при обработке фото: {str(e)}", exc_info=True)
             await message.reply(f"❌ Произошла ошибка: {str(e)}")
